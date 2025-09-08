@@ -1,0 +1,24 @@
+name: Inercia-Mensual
+
+on:
+  schedule:
+    - cron: '0 22 L * *'   # último día 22:00 UTC
+  workflow_dispatch:       # botón manual en GitHub
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -c "
+              import json, asyncio;
+              from inercia import calcular_inercia_mensual;
+              from telegram_bot import send_results;
+              asyncio.run(send_results())"
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
