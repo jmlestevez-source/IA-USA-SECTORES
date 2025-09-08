@@ -1,14 +1,19 @@
 import json, asyncio
 from telegram import Bot
+from telegram.ext import Application, CommandHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from inercia import calcular_inercia_mensual
 
 CONFIG_FILE = "config.json"
 
-async def send_results():
+# ---------- lógica de envío ----------
+async def send_results(chat_id: str = None):
     with open(CONFIG_FILE) as f:
         cfg = json.load(f)
     bot = Bot(cfg["token"])
+    if chat_id is None:
+        chat_id = cfg["chat_id"]
+
     rank = calcular_inercia_mensual()
     msg  = "📊 *Inercia Alcista – último día mes*\n\n"
     for i, (t, s) in enumerate(rank, 1):
@@ -16,11 +21,24 @@ async def send_results():
             msg += f"🎯 *{i}. {t}: {s:.2f}* ← ELEGIBLE\n"
         else:
             msg += f"{i}. {t}: {s:.2f}\n"
-    await bot.send_message(chat_id=cfg["chat_id"], text=msg, parse_mode="Markdown")
+    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
 
+# ---------- comando manual ----------
+async def cmd_rank(update, context):
+    await send_results(update.effective_chat.id)
+
+# ---------- arranque ----------
 async def start_bot():
-    sched = AsyncIOScheduler()
-    sched.add_job(send_results, 'cron', day='last', hour=22, minute=0)
-    sched.start()
-    print("Bot activo → envío el último día de cada mes a las 18:00 UTC.")
-    await asyncio.Event().wait()   # forever
+    with open(CONFIG_FILE) as f:
+        cfg = json.load(f)
+    app = Application.builder().token(cfg["token"]).build()
+    app.add_handler(CommandHandler("rank", cmd_rank))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_results, 'cron', day='last', hour=22, minute=0)
+    scheduler.start()
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()  # forever
