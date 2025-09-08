@@ -20,7 +20,7 @@ async def send_results():
 
 async def start_bot():
     sched = AsyncIOScheduler()
-    sched.add_job(send_results, 'cron', day='last', hour=18, minute=0)
+    sched.add_job(send_results, 'cron', day='last', hour=22, minute=0)
     sched.start()
     print("Bot activo → envío el último día de cada mes a las 18:00 UTC.")
     await asyncio.Event().wait()   # forever
