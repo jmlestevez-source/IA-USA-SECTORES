@@ -6,11 +6,9 @@ from inercia import calcular_inercia_mensual, formato_mensaje
 async def send_results():
     """Envía los resultados por Telegram."""
     
-    # Obtener variables de entorno
     token = os.environ.get('TOKEN')
     chat_id = os.environ.get('CHAT_ID')
     
-    # Validar que existan
     if not token:
         print("❌ Error: Variable TOKEN no configurada")
         return False
