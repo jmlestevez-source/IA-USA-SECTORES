@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 ETFS = ["XLK", "XLV", "XLF", "XLY", "XLC", "XLI", "XLP", "XLE", "XLU", "XLRE", "XLB", "IEF"]
 
@@ -34,8 +35,14 @@ def calcular_inercia_mensual():
     
     for ticker in ETFS:
         try:
-            # Descargar 3 años de datos diarios para tener suficiente historia mensual
-            df = yf.download(ticker, period="3y", interval="1d", progress=False)
+            # Descargar 3 años de datos con auto_adjust=True
+            df = yf.download(
+                ticker, 
+                period="3y", 
+                interval="1d", 
+                progress=False,
+                auto_adjust=True  # ← Precios ajustados por splits/dividendos
+            )
             
             if df.empty:
                 print(f"⚠️ {ticker}: Sin datos")
@@ -53,6 +60,15 @@ def calcular_inercia_mensual():
                 'Close': 'last',
                 'Volume': 'sum'
             }).dropna()
+            
+            # === ELIMINAR MES ACTUAL SI NO ESTÁ CERRADO ===
+            hoy = datetime.now()
+            ultimo_mes = df_monthly.index[-1]
+            
+            # Si el último mes es el mes actual, eliminarlo (vela no cerrada)
+            if ultimo_mes.month == hoy.month and ultimo_mes.year == hoy.year:
+                df_monthly = df_monthly.iloc[:-1]
+                print(f"📅 {ticker}: Usando datos hasta {df_monthly.index[-1].strftime('%Y-%m')} (mes actual excluido)")
             
             # Necesitamos al menos 15 meses (14 para ATR + 1 actual)
             if len(df_monthly) < 15:
@@ -83,7 +99,7 @@ def calcular_inercia_mensual():
             # F = (Ind1*0.4 + Ind2*0.2) / (Ind5*0.4) * 100
             fuerza_alcista = ((ind1 * 0.4 + ind2 * 0.2) / (ind5 * 0.4)) * 100
             
-            # Obtener el último valor
+            # Obtener el último valor (último mes cerrado)
             fa_actual = fuerza_alcista.iloc[-1]
             
             if pd.isna(fa_actual):
@@ -96,7 +112,8 @@ def calcular_inercia_mensual():
                 'roc8': round(float(ind1.iloc[-1] * 100), 2),
                 'roc10': round(float(ind2.iloc[-1] * 100), 2),
                 'volatilidad': round(float(ind5.iloc[-1] * 100), 4),
-                'precio': round(float(close.iloc[-1]), 2)
+                'precio': round(float(close.iloc[-1]), 2),
+                'mes': df_monthly.index[-1].strftime('%Y-%m')
             })
             
             print(f"✅ {ticker}: Fuerza Alcista = {fa_actual:.2f}")
@@ -113,12 +130,13 @@ def formato_mensaje(resultados):
     if not resultados:
         return "⚠️ No se pudieron calcular resultados"
     
-    from datetime import datetime
     fecha = datetime.now().strftime("%d/%m/%Y")
+    mes_datos = resultados[0]['mes'] if resultados else "N/A"
     
     lineas = [
         "📊 *INERCIA ALCISTA - SECTORES USA*",
-        f"📅 {fecha}",
+        f"📅 Calculado: {fecha}",
+        f"📆 Datos hasta: {mes_datos}",
         ""
     ]
     
