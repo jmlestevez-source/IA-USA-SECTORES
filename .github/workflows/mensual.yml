@@ -2,23 +2,80 @@ name: Inercia-Mensual
 
 on:
   schedule:
-    - cron: '0 22 L * *'   # último día 22:00 UTC
-  workflow_dispatch:       # botón manual en GitHub
+    # GitHub NO soporta 'L', ejecutamos días 28-31 y validamos en Python
+    - cron: '0 22 28-31 * *'
+  
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Ejecutar aunque no sea último día del mes'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python -c "
-              import json, asyncio;
-              from inercia import calcular_inercia_mensual;
-              from telegram_bot import send_results;
-              asyncio.run(send_results())"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verificar si es último día del mes
+        id: check_date
+        run: |
+          # Verificar si hoy es el último día del mes
+          TODAY=$(date +%d)
+          LAST_DAY=$(date -d "$(date +%Y-%m-01) +1 month -1 day" +%d)
+          
+          echo "📅 Hoy: día $TODAY"
+          echo "📅 Último día del mes: $LAST_DAY"
+          
+          if [ "$TODAY" == "$LAST_DAY" ]; then
+            echo "is_last_day=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_last_day=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Inercia Mensual
+        if: |
+          github.event_name == 'workflow_dispatch' && inputs.force_run == 'true' ||
+          github.event_name == 'workflow_dispatch' && steps.check_date.outputs.is_last_day == 'true' ||
+          github.event_name == 'schedule' && steps.check_date.outputs.is_last_day == 'true'
         env:
           TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python << 'EOF'
+          import asyncio
+          from inercia import calcular_inercia_mensual
+          from telegram_bot import send_results
+
+          async def main():
+              print("🔄 Calculando inercia mensual...")
+              resultado = calcular_inercia_mensual()
+              print(f"📊 Resultado: {resultado}")
+              
+              print("📤 Enviando resultados por Telegram...")
+              await send_results()
+              print("✅ Completado!")
+
+          asyncio.run(main())
+          EOF
+
+      - name: Skip notification
+        if: |
+          github.event_name == 'schedule' && steps.check_date.outputs.is_last_day == 'false'
+        run: |
+          echo "⏭️ No es el último día del mes, saltando ejecución..."
+          echo "   Esto es normal, se ejecuta días 28-31 pero solo actúa el último."
