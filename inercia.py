@@ -11,29 +11,40 @@ N = 8   # ROC3 período
 M = 10  # ROC4 período
 
 
-def calcular_atr(high, low, close, period=14):
+def calcular_atr_wilder(high, low, close, period=14):
     """
-    Calcula el Average True Range estándar (igual que Amibroker).
+    Calcula el ATR usando Wilder's Smoothing (exacto como Amibroker).
+    
+    Wilder's ATR:
+    - Primer valor: SMA de los primeros N True Ranges
+    - Siguientes: ATR = ATR_prev * (N-1)/N + TR * 1/N
     """
-    # True Range: máximo de los 3 componentes
+    # Calcular True Range
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     
     true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     
-    # ATR = Media móvil simple del True Range
-    # Nota: Amibroker usa Wilders MA por defecto, pero para simplicidad usamos SMA
-    # Si necesitas exactitud total, cambiar a EMA con alpha = 1/period
-    atr = true_range.rolling(window=period).mean()
+    # Wilder's smoothing usando EWM con alpha = 1/period
+    # Esto replica exactamente el ATR de Amibroker
+    atr = true_range.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     
     return atr
+
+
+def calcular_ma_wilder(serie, period=14):
+    """
+    Calcula Media Móvil con Wilder's Smoothing.
+    Amibroker usa esto para MA() cuando se combina con ATR.
+    """
+    return serie.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
 
 def calcular_roc(serie, periodo):
     """
     Calcula ROC igual que Amibroker: ((C - C[n]) / C[n]) * 100
-    Retorna el valor en PORCENTAJE (no decimal).
+    Retorna el valor en PORCENTAJE.
     """
     roc = ((serie - serie.shift(periodo)) / serie.shift(periodo)) * 100
     return roc
@@ -64,7 +75,8 @@ def descargar_datos_mensuales(ticker, start="2000-01-01", end=None):
         if isinstance(df.columns, pd.MultiIndex):
             df = df.droplevel(1, axis=1)
         
-        # Resamplear a mensual (incluye mes en curso)
+        # Resamplear a mensual
+        # Usamos 'ME' (Month End) para incluir todos los datos hasta hoy
         df_monthly = df.resample('ME').agg({
             'Open': 'first',
             'High': 'max',
@@ -90,10 +102,9 @@ def calcular_inercia_alcista(df_monthly):
     ROC3 = ROC(C, N) * 0.4;
     ROC4 = ROC(C, M) * 0.2;
     F1 = ROC3 + ROC4;
-    ATR14 = ATR(14);
+    ATR14 = ATR(14);        ← Usa Wilder's Smoothing
     F2 = (ATR14 / MA(C, 14)) * 0.4;
     InerciaAlcista = F1 / F2;
-    Score = IIf(InerciaAlcista < 0, 0, InerciaAlcista);
     """
     close = df_monthly['Close']
     high = df_monthly['High']
@@ -108,10 +119,10 @@ def calcular_inercia_alcista(df_monthly):
     # F1 = ROC3 + ROC4 (numerador)
     f1 = roc3 + roc4
     
-    # ATR14 = ATR(14)
-    atr14 = calcular_atr(high, low, close, period=14)
+    # ATR14 = ATR(14) con Wilder's Smoothing
+    atr14 = calcular_atr_wilder(high, low, close, period=14)
     
-    # MA(C, 14)
+    # MA(C, 14) - Media móvil simple estándar
     ma14 = close.rolling(window=14).mean()
     
     # F2 = (ATR14 / MA(C, 14)) * 0.4 (denominador)
@@ -120,7 +131,7 @@ def calcular_inercia_alcista(df_monthly):
     # InerciaAlcista = F1 / F2
     inercia_alcista = f1 / f2
     
-    return inercia_alcista, roc3, roc4, f1, f2
+    return inercia_alcista, roc3, roc4, f1, f2, atr14, ma14
 
 
 def calcular_inercia_mensual():
@@ -130,19 +141,21 @@ def calcular_inercia_mensual():
     """
     resultados = []
     
-    print("📅 Calculando con datos hasta HOY (incluye mes en curso)")
+    hoy = datetime.now()
+    print(f"📅 Fecha de cálculo: {hoy.strftime('%d/%m/%Y')}")
     print(f"📊 Parámetros: N={N}, M={M}")
+    print(f"📈 ATR: Wilder's Smoothing (14 períodos)")
     print()
     
     for ticker in ETFS:
         try:
-            df_monthly = descargar_datos_mensuales(ticker, start="2020-01-01")
+            df_monthly = descargar_datos_mensuales(ticker, start="2018-01-01")
             
             if df_monthly is None or len(df_monthly) < 15:
                 print(f"⚠️ {ticker}: Datos insuficientes")
                 continue
             
-            inercia, roc3, roc4, f1, f2 = calcular_inercia_alcista(df_monthly)
+            inercia, roc3, roc4, f1, f2, atr14, ma14 = calcular_inercia_alcista(df_monthly)
             
             # Último valor
             ia_actual = inercia.iloc[-1]
@@ -150,6 +163,8 @@ def calcular_inercia_mensual():
             roc4_actual = roc4.iloc[-1]
             f1_actual = f1.iloc[-1]
             f2_actual = f2.iloc[-1]
+            atr_actual = atr14.iloc[-1]
+            ma_actual = ma14.iloc[-1]
             
             if pd.isna(ia_actual):
                 print(f"⚠️ {ticker}: Valor NaN")
@@ -160,24 +175,32 @@ def calcular_inercia_mensual():
             
             close = df_monthly['Close']
             
+            # Debug info
+            roc_n = roc3_actual / 0.4  # ROC original sin ponderar
+            roc_m = roc4_actual / 0.2
+            
             resultados.append({
                 'ticker': ticker,
                 'inercia': round(float(ia_actual), 2),
                 'score': round(score, 2),
-                'roc3': round(float(roc3_actual), 2),
-                'roc4': round(float(roc4_actual), 2),
-                'f1': round(float(f1_actual), 2),
-                'f2': round(float(f2_actual), 4),
+                'roc_n': round(float(roc_n), 2),
+                'roc_m': round(float(roc_m), 2),
+                'f1': round(float(f1_actual), 4),
+                'f2': round(float(f2_actual), 6),
+                'atr': round(float(atr_actual), 4),
+                'ma': round(float(ma_actual), 2),
                 'precio': round(float(close.iloc[-1]), 2),
                 'fecha': df_monthly.index[-1].strftime('%Y-%m-%d')
             })
             
-            print(f"✅ {ticker}: Inercia={ia_actual:.2f} | ROC{N}={roc3_actual/0.4:.2f}% | ROC{M}={roc4_actual/0.2:.2f}%")
+            print(f"✅ {ticker}: IA={ia_actual:.2f} | ROC{N}={roc_n:.2f}% | ROC{M}={roc_m:.2f}% | ATR={atr_actual:.4f} | MA={ma_actual:.2f}")
             
         except Exception as e:
             print(f"❌ Error {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
     
-    # Ordenar por inercia descendente (como Amibroker SetSortColumns(-4))
+    # Ordenar por inercia descendente
     return sorted(resultados, key=lambda x: x['inercia'], reverse=True)
 
 
@@ -211,9 +234,7 @@ def formato_mensaje(resultados):
     lineas.append("")
     lineas.append("📈 *Detalles Top 3:*")
     for r in resultados[:3]:
-        roc_n = r['roc3'] / 0.4  # Recuperar ROC original
-        roc_m = r['roc4'] / 0.2
-        lineas.append(f"  • {r['ticker']}: ROC{N}={roc_n:.1f}% | ROC{M}={roc_m:.1f}%")
+        lineas.append(f"  • {r['ticker']}: ROC{N}={r['roc_n']:.1f}% | ROC{M}={r['roc_m']:.1f}%")
     
     lineas.append("")
     lineas.append(f"_Top 2: {', '.join(r['ticker'] for r in resultados[:2])}_")
@@ -228,9 +249,6 @@ def formato_mensaje(resultados):
 def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
     """
     Backtest rotacional mensual igual que Amibroker.
-    
-    SetOption("MaxOpenPositions", 2);
-    SetOption("WorstRankHeld", 2);
     """
     print(f"\n{'='*60}")
     print(f"📈 BACKTEST ROTACIONAL TOP {top_n}")
@@ -256,11 +274,9 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
         print(f"❌ Error: No se pudo descargar {BENCHMARK}")
         return None
     
-    # Obtener fechas del benchmark
     benchmark_df = datos[BENCHMARK]
-    fechas = benchmark_df.index[14:]  # Necesitamos 14 meses de historia
+    fechas = benchmark_df.index[14:]
     
-    # Calcular Inercia Alcista para cada ETF en cada fecha
     print("\n⏳ Calculando Inercia Alcista histórica...")
     inercia_historica = {}
     returns_historico = {}
@@ -270,13 +286,12 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
             continue
         
         df = datos[ticker]
-        inercia, _, _, _, _ = calcular_inercia_alcista(df)
+        inercia, _, _, _, _, _, _ = calcular_inercia_alcista(df)
         returns_m = df['Close'].pct_change()
         
         inercia_historica[ticker] = inercia
         returns_historico[ticker] = returns_m
     
-    # Simular estrategia
     print("⏳ Ejecutando simulación...")
     
     portfolio_value = [100.0]
@@ -288,7 +303,6 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
     for i, fecha in enumerate(fechas[:-1]):
         fecha_siguiente = fechas[i + 1]
         
-        # Obtener rankings de este mes
         rankings = []
         for ticker in ETFS:
             if ticker not in inercia_historica:
@@ -300,9 +314,8 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
             
             valor = inercia.loc[fecha]
             if pd.notna(valor):
-                # Score = IIf(InerciaAlcista < 0, 0, InerciaAlcista)
                 score = max(0, valor)
-                if score > 0:  # Solo considerar los que tienen score > 0
+                if score > 0:
                     rankings.append((ticker, score))
         
         if len(rankings) < top_n:
@@ -310,11 +323,9 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
         
         fechas_validas.append(fecha_siguiente)
         
-        # Ordenar por score descendente
         rankings.sort(key=lambda x: x[1], reverse=True)
         nuevos_top = set([r[0] for r in rankings[:top_n]])
         
-        # Log de cambios
         entradas = nuevos_top - posiciones_actuales
         salidas = posiciones_actuales - nuevos_top
         
@@ -328,7 +339,6 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
         
         posiciones_actuales = nuevos_top
         
-        # Calcular retorno del mes siguiente
         retornos_mes = []
         for ticker in posiciones_actuales:
             if ticker in returns_historico:
@@ -343,12 +353,10 @@ def ejecutar_backtest(top_n=2, start_date="2000-01-01"):
         else:
             ret_portfolio = 0
         
-        # Retorno del benchmark
         ret_bench = benchmark_df['Close'].pct_change().loc[fecha_siguiente]
         if pd.isna(ret_bench):
             ret_bench = 0
         
-        # Actualizar valores
         portfolio_value.append(portfolio_value[-1] * (1 + ret_portfolio))
         benchmark_value.append(benchmark_value[-1] * (1 + ret_bench))
     
@@ -372,7 +380,6 @@ def calcular_metricas(resultados, trades_log, top_n):
     
     años = (resultados.index[-1] - resultados.index[0]).days / 365.25
     
-    # === PORTFOLIO ===
     valor_inicial_p = resultados['Portfolio'].iloc[0]
     valor_final_p = resultados['Portfolio'].iloc[-1]
     
@@ -385,7 +392,6 @@ def calcular_metricas(resultados, trades_log, top_n):
     returns_p = resultados['Portfolio'].pct_change().dropna()
     sharpe_p = (returns_p.mean() / returns_p.std()) * np.sqrt(12) if returns_p.std() > 0 else 0
     
-    # === BENCHMARK ===
     valor_inicial_b = resultados['Benchmark'].iloc[0]
     valor_final_b = resultados['Benchmark'].iloc[-1]
     
